@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>تحدّي مصطلحات التاريخ | BEN CENTRE</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Cairo:wght@600;700;800;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="landing">
+  <div class="brand"><span class="logo">BEN<b>CENTRE</b></span></div>
+  <h1>تحدّي مصطلحات التاريخ</h1>
+  <p class="muted center" style="margin:-12px 0 0">الأولى بكالوريا — حصة من 40 دقيقة</p>
+  <div class="cards">
+    <div class="card">
+      <h2>أنا الأستاذ</h2>
+      <p class="muted" style="margin:0">أنشئ جلسة جديدة وافتح السبورة التفاعلية.</p>
+      <button class="btn-red" id="create" style="font-size:1.2rem;padding:14px">إنشاء جلسة جديدة</button>
+      <div id="recent"></div>
+    </div>
+    <div class="card">
+      <h2>أنا تلميذ</h2>
+      <p class="muted" style="margin:0">امسح رمز QR على السبورة، أو اكتب رمز الجلسة.</p>
+      <form id="joinf" class="row" style="flex-wrap:nowrap">
+        <input id="code" maxlength="5" placeholder="مثال: K7QXM" autocomplete="off" style="direction:ltr;text-align:center;letter-spacing:.2em;font-weight:900;text-transform:uppercase;font-size:1.3rem">
+        <button class="btn-white" style="white-space:nowrap">دخول</button>
+      </form>
+    </div>
+  </div>
+</div>
+<script src="/common.js"></script>
+<script>
+const { h, api, store, toast } = BC;
+document.getElementById('create').onclick = async e => {
+  e.target.disabled = true;
+  try {
+    const r = await api('/api/sessions', {});
+    store.set('bc_t_' + r.code, r.key);
+    const list = JSON.parse(store.get('bc_recent') || '[]').filter(x => x.code !== r.code);
+    list.unshift({ code: r.code, at: Date.now() }); store.set('bc_recent', JSON.stringify(list.slice(0, 5)));
+    location.href = '/t/' + r.code;
+  } catch (err) { toast(err.message, 'bad'); e.target.disabled = false; }
+};
+document.getElementById('joinf').onsubmit = e => {
+  e.preventDefault();
+  const c = document.getElementById('code').value.trim().toUpperCase();
+  if (/^[A-Z0-9]{5}$/.test(c)) location.href = '/j/' + c; else toast('الرمز يتكون من 5 أحرف', 'bad');
+};
+const recent = JSON.parse(store.get('bc_recent') || '[]').filter(x => store.get('bc_t_' + x.code));
+if (recent.length) document.getElementById('recent').append(
+  h('div', { class: 'muted', style: 'font-size:.9rem;margin-bottom:6px' }, 'جلساتي الأخيرة:'),
+  h('div', { class: 'row' }, recent.map(x => h('a', { href: '/t/' + x.code, class: 'chip', style: 'color:#fff;text-decoration:none;direction:ltr' }, x.code + ' · ' + new Date(x.at).toLocaleDateString('ar-MA'))))
+);
+</script>
+</body>
+</html>

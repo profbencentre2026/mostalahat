@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<meta name="theme-color" content="#0A0A0A">
+<title>تحدّي مصطلحات التاريخ | BEN CENTRE</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Cairo:wght@600;700;800;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="phone">
+  <header><div class="brand"><span class="logo">BEN<b>CENTRE</b></span></div><div id="me" class="muted" style="font-weight:800"></div></header>
+  <main id="app"><div class="wait"><div class="pulse"></div>جارٍ الاتصال…</div></main>
+</div>
+<script src="/common.js"></script>
+<script src="/norm.js"></script>
+<script>
+const { h, api, live, throttle, store, shuffle, toast, LETTERS } = BC;
+const CODE = location.pathname.split('/')[2].toUpperCase();
+const app = document.getElementById('app');
+let clientId = store.get('bc_client');
+if (!clientId) { clientId = (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2) + Date.now()); store.set('bc_client', clientId); }
+let token = store.get('bc_s_' + CODE);
+let view = null, sig = '', connected = true, retry = null;
+const drafts = JSON.parse(store.get('bc_d_' + CODE) || '{}');
+const saveDrafts = () => store.set('bc_d_' + CODE, JSON.stringify(drafts));
+
+function setView(node) { app.replaceChildren(node); }
+
+async function start() {
+  if (token) return connect();
+  // تحقق من وجود الجلسة
+  try { await api(`/api/s/${CODE}`); } catch (e) { return offline(e.message); }
+  // إعادة الاتصال بنفس الجهاز دون اسم (بعد مسح التخزين الجزئي)
+  try { const r = await api(`/api/s/${CODE}/join`, { clientId }); return joined(r); } catch {}
+  renderJoin();
+}
+function renderJoin(err) {
+  const inp = h('input', { maxlength: 20, placeholder: 'اسم مستعار (مثال: نجم 7)', autocomplete: 'off' });
+  const f = h('form', { style: 'display:flex;flex-direction:column;gap:14px', onsubmit: async e => {
+    e.preventDefault(); const pseudo = inp.value.trim(); if (!pseudo) return toast('اكتب اسمًا مستعارًا', 'bad');
+    btn.disabled = true;
+    try { joined(await api(`/api/s/${CODE}/join`, { pseudo, clientId })); } catch (e) { toast(e.message, 'bad'); btn.disabled = false; }
+  } }, h('h2', {}, 'انضم إلى الحصة'), h('p', { class: 'muted', style: 'margin:0' }, 'لا حاجة إلى حساب. اختر اسمًا مستعارًا يعرفه أستاذك فقط.'), inp);
+  const btn = h('button', { class: 'btn-red big' }, 'دخول'); f.append(btn);
+  f.append(h('p', { class: 'muted center', style: 'margin:0;direction:ltr' }, 'جلسة ' + CODE));
+  setView(f); setTimeout(() => inp.focus(), 50);
+}
+function joined(r) { token = r.token; store.set('bc_s_' + CODE, token); connect(); }
+
+let liveConn;
+function connect() {
+  const refresh = throttle(load, 300);
+  liveConn = live(`/api/s/${CODE}/events?token=${encodeURIComponent(token)}`, refresh, ok => { connected = ok; });
+  load();
+}
+async function load() {
+  try {
+    const v = await api(`/api/s/${CODE}?token=${encodeURIComponent(token)}`);
+    if (!v.me) { // الرمز لم يعد صالحًا (حذفه الأستاذ أو أعيد تشغيل الخادم)
+      store.del('bc_s_' + CODE); token = null; liveConn && liveConn.close();
+      try { return joined(await api(`/api/s/${CODE}/join`, { clientId })); } catch { return renderJoin(); }
+    }
+    view = v;
+    document.getElementById('me').textContent = v.me.pseudo;
+    const s = JSON.stringify([v.stage, v.current, v.exit, v.review]);
+    if (s !== sig) { sig = s; render(); }
+  } catch (e) {
+    if (e.status === 404) { liveConn && liveConn.close(); offline(e.message); }
+  }
+}
+// الجلسة غير متاحة: نعرض المراجعة المحفوظة على الهاتف إن وجدت
+function offline(msg) {
+  const rv = JSON.parse(store.get('bc_rv_' + CODE) || 'null');
+  const kids = [h('div', { style: 'font-size:2rem' }, '⚠️'), msg];
+  if (rv && rv.terms && rv.terms.length) kids.push(h('button', { class: 'btn-white big', onclick: () => { retry = buildRetry(rv); renderRetry(); } }, 'اختبار إعادة المحاولة (محفوظ على هاتفك)'));
+  kids.push(h('a', { href: '/', class: 'chip', style: 'color:#fff;text-decoration:none' }, 'العودة'));
+  setView(h('div', { class: 'wait' }, kids));
+}
+
+function render() {
+  const v = view;
+  if (retry) return renderRetry();
+  if (v.exit && v.exit.status !== 'idle') return renderExit(v.exit);
+  const c = v.current;
+  if (!c) return setView(waiting('انتظر… سيظهر السؤال هنا عندما يفتحه الأستاذ.'));
+  if (c.status === 'revealed') return renderResult(c);
+  if (c.myAnswer != null) return setView(h('div', {}, qHead(c.q), h('div', { class: 'sent' }, '✓ تم إرسال إجابتك', h('div', { class: 'muted', style: 'font-weight:600;margin-top:6px;white-space:pre-wrap' }, answerText(c.q, c.myAnswer))), waiting(c.status === 'open' ? 'انتظر إغلاق السؤال وكشف التصحيح.' : 'أُغلق السؤال. انتظر التصحيح.')));
+  if (c.status !== 'open') return setView(h('div', {}, qHead(c.q), waiting('أُغلق هذا السؤال. انتظر السؤال التالي.')));
+  renderQuestion(c.q);
+}
+const waiting = msg => h('div', { class: 'wait' }, h('div', { class: 'pulse' }), msg);
+const TYPE = { mcq: 'اختر المصطلح المناسب', fill: 'أكمل بكلمة مفتاحية', open: 'اكتب من ذاكرتك' };
+const qHead = q => h('div', {}, h('div', { class: 'muted', style: 'font-weight:800;margin-bottom:6px' }, TYPE[q.type]), h('div', { class: 'q' }, q.prompt));
+const answerText = (q, a) => q.type === 'mcq' ? (LETTERS[a] + ' — ' + q.options[a]) : a;
+
+function renderQuestion(q) {
+  const box = h('div', { style: 'display:flex;flex-direction:column;gap:12px' }, qHead(q));
+  const submit = async (value, btn) => {
+    if (btn) btn.disabled = true;
+    try { await api(`/api/s/${CODE}/answer`, { token, qid: q.id, value }); delete drafts[q.id]; saveDrafts(); toast('تم الإرسال ✓', 'ok'); load(); }
+    catch (e) { toast(e.message, 'bad'); if (btn) btn.disabled = false; load(); }
+  };
+  if (q.type === 'mcq') {
+    let picked = null;
+    const send = h('button', { class: 'btn-red big', disabled: true, onclick: () => submit(picked, send) }, 'إرسال');
+    const btns = q.options.map((o, i) => h('button', { class: 'choice', onclick: () => { picked = i; btns.forEach((b, j) => b.classList.toggle('picked', j === i)); send.disabled = false; } }, h('span', { class: 'L' }, LETTERS[i]), o));
+    box.append(...btns, send, h('p', { class: 'muted center', style: 'margin:0' }, 'إرسال واحد فقط لكل سؤال.'));
+  } else {
+    const ta = h(q.type === 'fill' ? 'input' : 'textarea', { maxlength: 800, placeholder: q.type === 'fill' ? 'الكلمة الناقصة…' : 'اكتب التعريف بأسلوبك…', oninput: e => { drafts[q.id] = e.target.value; saveDrafts(); } });
+    ta.value = drafts[q.id] || '';
+    const send = h('button', { class: 'btn-red big', onclick: () => { if (!ta.value.trim()) return toast('الإجابة فارغة', 'bad'); submit(ta.value.trim(), send); } }, 'إرسال');
+    box.append(ta, send, h('p', { class: 'muted center', style: 'margin:0' }, 'إرسال واحد فقط لكل سؤال.'));
+  }
+  setView(box);
+}
+
+function modelBox(r) {
+  return h('div', { class: 'modelbox' },
+    h('div', { style: 'font-weight:900;font-size:1.1rem' }, r.term),
+    h('div', {}, r.def),
+    r.keywords && r.keywords.length ? h('div', { style: 'margin-top:6px' }, h('span', { class: 'muted' }, 'العناصر الأساسية: '), r.keywords.map(k => h('span', { class: 'chip red' }, k))) : null,
+    r.example ? h('div', { class: 'muted', style: 'margin-top:6px' }, 'مثال: ' + r.example) : null);
+}
+function renderResult(c) {
+  const r = c.result;
+  let cls = 'pend', msg = 'لم ترسل إجابة لهذا السؤال.';
+  if (r.correct === true) { cls = 'ok'; msg = '✓ إجابة صحيحة'; }
+  else if (r.correct === false) { cls = 'bad'; msg = '✗ إجابة غير صحيحة'; }
+  const box = h('div', { style: 'display:flex;flex-direction:column;gap:12px' }, qHead(c.q));
+  if (c.q.type === 'mcq') {
+    box.append(...c.q.options.map((o, i) => h('div', { class: 'choice ' + (o === r.answer ? 'correct' : (c.myAnswer === i ? 'wrong' : '')) }, h('span', { class: 'L' }, LETTERS[i]), o)));
+  } else if (c.myAnswer != null) {
+    box.append(h('div', { class: 'box', style: 'white-space:pre-wrap' }, h('div', { class: 'muted' }, 'إجابتك:'), c.myAnswer));
+  }
+  box.append(h('div', { class: 'result ' + cls }, h('div', { style: 'font-weight:900;font-size:1.2rem' }, msg),
+    r.pending && r.correct != null ? h('div', { class: 'muted' }, 'تصحيح آلي أولي؛ قد يقبل الأستاذ صياغة مكافئة.') : null,
+    c.q.type === 'fill' ? h('div', {}, 'الكلمة المنتظرة: ', h('b', {}, r.answer)) : null));
+  box.append(h('div', { class: 'muted', style: 'font-weight:800' }, c.q.type === 'open' ? 'التعريف النموذجي وعناصره الأساسية:' : 'للتذكير:'), modelBox(r));
+  setView(box);
+}
+
+function renderExit(ex) {
+  if (ex.status === 'published') return renderExitResults(ex);
+  if (ex.submitted) return setView(h('div', {}, h('h2', {}, 'اختبار الخروج'), h('div', { class: 'sent', style: 'margin-top:12px' }, '✓ تم إرسال اختبارك'), waiting('انتظر نشر النتائج من طرف الأستاذ.')));
+  if (ex.status !== 'open') return setView(waiting('أُغلق اختبار الخروج.'));
+  const fields = ex.items.map((it, i) => {
+    const key = 'exit' + i;
+    const ta = h('textarea', { maxlength: 800, placeholder: it.kind === 'use' ? 'جملة تاريخية تتضمن المصطلح…' : 'التعريف…', oninput: e => { drafts[key] = e.target.value; saveDrafts(); } });
+    ta.value = drafts[key] || '';
+    return { it, ta };
+  });
+  const send = h('button', { class: 'btn-red big', onclick: async () => {
+    const values = fields.map(f => f.ta.value.trim());
+    if (values.some(v => !v)) return toast('أجب عن البنود الثلاثة قبل الإرسال', 'bad');
+    send.disabled = true;
+    try { await api(`/api/s/${CODE}/exit`, { token, values }); fields.forEach((_, i) => delete drafts['exit' + i]); saveDrafts(); toast('تم الإرسال ✓', 'ok'); load(); }
+    catch (e) { toast(e.message, 'bad'); send.disabled = false; }
+  } }, 'إرسال الاختبار');
+  setView(h('div', { style: 'display:flex;flex-direction:column;gap:14px' },
+    h('h2', {}, 'اختبار الخروج'), h('p', { class: 'muted', style: 'margin:0' }, 'بدون اختيارات. اكتب من ذاكرتك ثم أرسل مرة واحدة.'),
+    fields.map((f, i) => h('div', { style: 'display:flex;flex-direction:column;gap:8px' }, h('div', { class: 'q', style: 'font-size:1.1rem' }, (i + 1) + '. ' + f.it.prompt), f.ta)), send));
+}
+
+function renderExitResults(ex) {
+  const rv = view.review || { terms: [], allNames: [] };
+  store.set('bc_rv_' + CODE, JSON.stringify(rv));
+  const okN = ex.items.filter(x => x.correct).length;
+  setView(h('div', { style: 'display:flex;flex-direction:column;gap:14px' },
+    h('h2', {}, 'نتيجة اختبار الخروج: ' + okN + ' / ' + ex.items.length),
+    ex.items.map((x, i) => h('div', { class: 'result ' + (x.correct ? 'ok' : 'bad') },
+      h('div', { style: 'font-weight:900' }, (x.correct ? '✓ ' : '✗ ') + x.prompt),
+      x.mine ? h('div', { class: 'muted', style: 'white-space:pre-wrap' }, 'إجابتك: ' + x.mine) : h('div', { class: 'muted' }, 'لم تُرسل إجابة.'),
+      x.correct ? null : modelBox({ term: x.term, def: x.def, keywords: x.keywords, example: x.example }))),
+    h('div', { class: 'box review' },
+      h('h3', {}, '📌 مصطلحات أحتاج إلى مراجعتها'),
+      rv.terms.length ? h('ul', { style: 'margin:0;padding-inline-start:20px' }, rv.terms.map(t => h('li', {}, h('b', {}, t.name), ' — ', t.def))) : h('p', { style: 'margin:0' }, 'ممتاز! لا توجد مصطلحات للمراجعة. يمكنك مع ذلك التدرب.'),
+      h('p', { class: 'muted', style: 'margin:10px 0 0' }, 'احتفظ بهذا الرابط: ستجد هنا اختبارًا قصيرًا لإعادة المحاولة في الحصة التالية.')),
+    h('button', { class: 'btn-white big', onclick: () => { retry = buildRetry(rv); render(); } }, 'ابدأ اختبار إعادة المحاولة')));
+}
+
+// اختبار إعادة المحاولة (يعمل على الهاتف دون الخادم)
+function buildRetry(rv) {
+  const pool = rv.terms.length ? rv.terms : [];
+  const names = rv.allNames || [];
+  const items = [];
+  for (const t of pool) {
+    const opts = shuffle([t.name, ...shuffle(names.filter(n => n !== t.name)).slice(0, 3)]);
+    items.push({ type: 'mcq', prompt: 'أي مصطلح يناسب هذا التعريف؟\n«' + t.def + '»', options: opts, answer: opts.indexOf(t.name), t });
+    if (t.situation) { const o2 = shuffle([t.name, ...shuffle(names.filter(n => n !== t.name)).slice(0, 3)]); items.push({ type: 'mcq', prompt: 'وضعية: ' + t.situation + '\nما المصطلح المناسب؟', options: o2, answer: o2.indexOf(t.name), t }); }
+    items.push({ type: 'open', prompt: 'اكتب تعريف «' + t.name + '» ثم قارن بالتعريف النموذجي.', t });
+  }
+  return { items: shuffle(items).slice(0, 9), i: 0, score: 0, answered: false, last: null };
+}
+const back = () => view ? render() : offline('الجلسة غير متاحة حاليًا.');
+function renderRetry() {
+  const R = retry;
+  if (!R.items.length) { retry = null; toast('لا توجد مصطلحات للمراجعة', 'ok'); return back(); }
+  if (R.i >= R.items.length) {
+    const nMcq = R.items.filter(x => x.type === 'mcq').length;
+    return setView(h('div', { style: 'display:flex;flex-direction:column;gap:14px' }, h('h2', {}, 'انتهى الاختبار'),
+      h('div', { class: 'result ' + (R.score === nMcq ? 'ok' : 'pend') }, 'أسئلة الاختيار الصحيحة: ' + R.score + ' / ' + nMcq),
+      h('button', { class: 'btn-red big', onclick: () => { retry = buildRetry(JSON.parse(store.get('bc_rv_' + CODE) || '{"terms":[]}')); render(); } }, 'إعادة المحاولة'),
+      h('button', { class: 'btn-line big', onclick: () => { retry = null; back(); } }, 'رجوع')));
+  }
+  const it = R.items[R.i];
+  const next = h('button', { class: 'btn-white big', onclick: () => { R.i++; R.answered = false; R.last = null; render(); } }, R.i + 1 < R.items.length ? 'التالي' : 'إنهاء');
+  const box = h('div', { style: 'display:flex;flex-direction:column;gap:12px' }, h('div', { class: 'muted', style: 'font-weight:800' }, 'إعادة المحاولة ' + (R.i + 1) + ' / ' + R.items.length), h('div', { class: 'q' }, it.prompt));
+  if (it.type === 'mcq') {
+    box.append(...it.options.map((o, i) => h('button', { class: 'choice ' + (R.answered ? (i === it.answer ? 'correct' : (R.last === i ? 'wrong' : '')) : ''), disabled: R.answered, onclick: () => { R.answered = true; R.last = i; if (i === it.answer) R.score++; render(); } }, h('span', { class: 'L' }, LETTERS[i]), o)));
+    if (R.answered) box.append(h('div', { class: 'muted' }, it.t.hint || ''), next);
+  } else {
+    const ta = h('textarea', { placeholder: 'اكتب التعريف…' });
+    if (R.answered) box.append(h('div', { class: 'box', style: 'white-space:pre-wrap' }, R.last || '—'), modelBox({ term: it.t.name, def: it.t.def, keywords: it.t.keywords, example: it.t.example }), h('div', { class: 'muted' }, 'هل ذكرت العناصر الأساسية؟'), next);
+    else box.append(ta, h('button', { class: 'btn-red big', onclick: () => { R.answered = true; R.last = ta.value; render(); } }, 'قارن بالتعريف النموذجي'));
+  }
+  setView(box);
+}
+
+// مراجعة محفوظة حتى لو انتهت الجلسة على الخادم
+window.addEventListener('error', () => {});
+start();
+</script>
+</body>
+</html>

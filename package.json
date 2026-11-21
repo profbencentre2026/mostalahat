@@ -1,0 +1,10 @@
+{
+  "name": "ben-centre-history-terms",
+  "version": "1.0.0",
+  "description": "تحدّي مصطلحات التاريخ | BEN CENTRE — حصة تفاعلية مباشرة (سبورة + هواتف)",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=18" },
+  "license": "UNLICENSED",
+  "private": true
+}
